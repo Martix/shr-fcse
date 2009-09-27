@@ -62,6 +62,21 @@
 	mov	r1, #\reason
 	.endm
 
+	.macro fcse_dabt_mva_to_va
+#ifdef	CONFIG_ARM_FCSE
+	@
+	@ If FCSE is enabled the data abort fault address must be
+	@ converted from MVA to VA. This must happen before the irqs are
+	@ enabled if PREEMPT is enabled, as context switches may
+	@ change the FCSE pid.
+	@
+	mrc     p15, 0, r2, c13, c0, 0
+	eor	r2, r2, r0
+	tst	r2, #0xfe000000
+	moveq   r0, r2
+#endif
+	.endm
+
 __pabt_invalid:
 	inv_entry BAD_PREFETCH
 	b	common_invalid
@@ -175,6 +190,7 @@ __dabt_svc:
 #else
 	bl	CPU_DABORT_HANDLER
 #endif
+	fcse_dabt_mva_to_va
 
 	@
 	@ set desired IRQ state, then call main handler
@@ -418,6 +434,7 @@ __dabt_usr:
 #else
 	bl	CPU_DABORT_HANDLER
 #endif
+	fcse_dabt_mva_to_va
 
 	@
 	@ IRQs on, then call the main handler
