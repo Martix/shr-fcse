@@ -34,17 +34,47 @@ static unsigned long fcse_pids_bits[PIDS_LONGS];
 unsigned long fcse_pids_cache_dirty[PIDS_LONGS];
 EXPORT_SYMBOL(fcse_pids_cache_dirty);
 
+#ifdef CONFIG_ARM_FCSE_BEST_EFFORT
+static unsigned random_pid;
+struct fcse_user fcse_pids_user[NR_PIDS];
+#endif /* CONFIG_ARM_FCSE_BEST_EFFORT */
+
 static inline void fcse_pid_reference_inner(unsigned pid)
 {
-	__set_bit(pid, fcse_pids_bits);
+#ifdef CONFIG_ARM_FCSE_BEST_EFFORT
+	if (++fcse_pids_user[pid].count == 1)
+#endif /* CONFIG_ARM_FCSE_BEST_EFFORT */
+		__set_bit(pid, fcse_pids_bits);
 }
 
 static inline void fcse_pid_dereference(struct mm_struct *mm)
 {
 	unsigned fcse_pid = mm->context.fcse.pid >> FCSE_PID_SHIFT;
 
+#ifdef CONFIG_ARM_FCSE_BEST_EFFORT
+	if (--fcse_pids_user[fcse_pid].count == 0)
+		__clear_bit(fcse_pid, fcse_pids_bits);
+
+	/*
+	 * The following means we suppose that by the time this
+	 * function is called, this mm is out of cache:
+	 * - when the caller is destroy_context, exit_mmap is called
+	 * by mmput before, which flushes the cache;
+	 * - when the caller is fcse_relocate_mm_to_pid from
+	 * fcse_switch_mm_inner, we only relocate when the mm is out
+	 * of cache;
+	 * - when the caller is fcse_relocate_mm_to_pid from
+	 * fcse_relocate_mm_to_null_pid, we flush the cache in this
+	 * function.
+	 */
+	if (fcse_pids_user[fcse_pid].mm == mm) {
+		fcse_pids_user[fcse_pid].mm = NULL;
+		__clear_bit(fcse_pid, fcse_pids_cache_dirty);
+	}
+#else /* CONFIG_ARM_FCSE_BEST_EFFORT */
 	__clear_bit(fcse_pid, fcse_pids_bits);
 	__clear_bit(fcse_pid, fcse_pids_cache_dirty);
+#endif /* CONFIG_ARM_FCSE_BEST_EFFORT */
 }
 
 static inline unsigned find_free_pid(unsigned long bits[])
@@ -152,6 +182,39 @@ fcse_flush_all_done(unsigned seq, unsigned dirty)
 	preempt_enable();
 #endif /* CONFIG_ARM_FCSE_PREEMPT_FLUSH */
 }
+
+#ifdef CONFIG_ARM_FCSE_BEST_EFFORT
+int fcse_switch_mm_inner(struct mm_struct *prev, struct mm_struct *next)
+{
+	unsigned fcse_pid = next->context.fcse.pid >> FCSE_PID_SHIFT;
+	unsigned flush_needed, reused_pid = 0;
+	unsigned long flags;
+
+	if (unlikely(next == &init_mm)) {
+		raw_spin_lock_irqsave(&fcse_lock, flags);
+		goto is_flush_needed;
+	}
+
+	raw_spin_lock_irqsave(&fcse_lock, flags);
+	if (fcse_pids_user[fcse_pid].mm != next) {
+		if (fcse_pids_user[fcse_pid].mm)
+			reused_pid = test_bit(fcse_pid, fcse_pids_cache_dirty);
+		fcse_pids_user[fcse_pid].mm = next;
+	}
+
+  is_flush_needed:
+	flush_needed = reused_pid;
+
+	fcse_pid_set(fcse_pid << FCSE_PID_SHIFT);
+	if (flush_needed)
+		fcse_clear_dirty_all();
+	if (next != &init_mm)
+		__set_bit(fcse_pid, fcse_pids_cache_dirty);
+	raw_spin_unlock_irqrestore(&fcse_lock, flags);
+
+	return flush_needed;
+}
+#endif /* CONFIG_ARM_FCSE_BEST_EFFORT */
 
 unsigned long
 fcse_check_mmap_inner(struct mm_struct *mm, unsigned long start_addr,
