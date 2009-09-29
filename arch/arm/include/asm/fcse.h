@@ -74,6 +74,7 @@ struct fcse_user {
 };
 extern struct fcse_user fcse_pids_user[];
 int fcse_switch_mm_inner(struct mm_struct *prev, struct mm_struct *next);
+void fcse_pid_reference(unsigned pid);
 
 static inline int fcse_switch_mm(struct mm_struct *prev, struct mm_struct *next)
 {

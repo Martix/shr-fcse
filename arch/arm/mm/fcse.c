@@ -184,6 +184,33 @@ fcse_flush_all_done(unsigned seq, unsigned dirty)
 }
 
 #ifdef CONFIG_ARM_FCSE_BEST_EFFORT
+/* Called with preemption disabled, mm->mmap_sem being held for writing. */
+static noinline int fcse_relocate_mm_to_pid(struct mm_struct *mm, int fcse_pid)
+{
+	const unsigned len = pgd_index(FCSE_TASK_SIZE) * sizeof(pgd_t);
+	unsigned long flags;
+	pgd_t *from, *to;
+
+	raw_spin_lock_irqsave(&fcse_lock, flags);
+	fcse_pid_dereference(mm);
+	fcse_pid_reference_inner(fcse_pid);
+	fcse_pids_user[fcse_pid].mm = mm;
+	__set_bit(fcse_pid, fcse_pids_cache_dirty);
+	raw_spin_unlock_irqrestore(&fcse_lock, flags);
+
+	from = pgd_offset(mm, 0);
+	mm->context.fcse.pid = fcse_pid << FCSE_PID_SHIFT;
+	to = pgd_offset(mm, 0);
+
+	memcpy(to, from, len);
+	memset(from, '\0', len);
+	barrier();
+	clean_dcache_area(from, len);
+	clean_dcache_area(to, len);
+
+	return fcse_pid;
+}
+
 int fcse_switch_mm_inner(struct mm_struct *prev, struct mm_struct *next)
 {
 	unsigned fcse_pid = next->context.fcse.pid >> FCSE_PID_SHIFT;
@@ -203,7 +230,9 @@ int fcse_switch_mm_inner(struct mm_struct *prev, struct mm_struct *next)
 	}
 
   is_flush_needed:
-	flush_needed = reused_pid;
+	flush_needed = reused_pid
+		|| prev->context.fcse.high_pages
+		|| next->context.fcse.high_pages;
 
 	fcse_pid_set(fcse_pid << FCSE_PID_SHIFT);
 	if (flush_needed)
@@ -214,12 +243,70 @@ int fcse_switch_mm_inner(struct mm_struct *prev, struct mm_struct *next)
 
 	return flush_needed;
 }
+
+void fcse_pid_reference(unsigned fcse_pid)
+{
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&fcse_lock, flags);
+	fcse_pid_reference_inner(fcse_pid);
+	raw_spin_unlock_irqrestore(&fcse_lock, flags);
+}
+
+/* Called with mm->mmap_sem write-locked. */
+static noinline void fcse_relocate_mm_to_null_pid(struct mm_struct *mm)
+{
+	if (!cache_is_vivt())
+		return;
+
+	preempt_disable();
+	while (fcse_mm_in_cache(mm)) {
+		unsigned seq;
+
+		preempt_enable();
+
+		seq = fcse_flush_all_start();
+		flush_cache_all();
+
+		preempt_disable();
+		fcse_flush_all_done(seq, 0);
+	}
+
+	fcse_relocate_mm_to_pid(mm, 0);
+	barrier();
+	flush_tlb_mm(mm);
+	fcse_pid_set(0);
+
+	preempt_enable();
+}
 #endif /* CONFIG_ARM_FCSE_BEST_EFFORT */
 
 unsigned long
 fcse_check_mmap_inner(struct mm_struct *mm, unsigned long start_addr,
 		      unsigned long addr, unsigned long len, unsigned long fl)
 {
+#ifdef CONFIG_ARM_FCSE_BEST_EFFORT
+	/* Address above 32MB */
+	if (addr + len > FCSE_TASK_SIZE && !mm->context.fcse.high_pages) {
+		/* Restart to try and find a hole, once. */
+		if (start_addr != TASK_UNMAPPED_BASE && !(fl & MAP_FIXED))
+			return TASK_UNMAPPED_BASE;
+
+		if (!mm->context.fcse.large) {
+			/* Ok, the process is going to be larger than 32MB */
+#ifdef CONFIG_ARM_FCSE_MSSAGES
+			printk(KERN_INFO "FCSE: process %u(%s) VM exceeds 32MB.\n",
+			       current->pid, current->comm);
+#endif /* CONFIG_ARM_FCSE_MESSAGES */
+			mm->context.fcse.large = 1;
+		}
+		if (mm->context.fcse.pid)
+			fcse_relocate_mm_to_null_pid(mm);
+	}
+
+	return addr;
+
+#else /* CONFIG_ARM_FCSE_GUARANTEED */
 	/* Address above 32MB */
 	/* Restart to try and find a hole, once. */
 	if (start_addr != TASK_UNMAPPED_BASE && !(fl & MAP_FIXED))
@@ -231,6 +318,7 @@ fcse_check_mmap_inner(struct mm_struct *mm, unsigned long start_addr,
 	       current->pid, current->comm);
 #endif /* CONFIG_ARM_FCSE_MESSAGES */
 	return -ENOMEM;
+#endif /* CONFIG_ARM_FCSE_GUARANTEED */
 }
 
 #ifdef CONFIG_ARM_FCSE_MESSAGES
