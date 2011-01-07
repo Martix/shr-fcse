@@ -43,4 +43,5 @@ obj-$(CONFIG_ARM_CHARLCD)	+= arm-charlcd.o
 obj-$(CONFIG_PCH_PHUB)		+= pch_phub.o
 obj-y				+= ti-st/
 obj-$(CONFIG_AB8500_PWM)	+= ab8500-pwm.o
+obj-$(CONFIG_OPENMOKO_RESUME_REASON)   += neo1973_pm_resume_reason.o
 obj-y				+= lis3lv02d/
