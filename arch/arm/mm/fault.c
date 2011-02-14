@@ -181,7 +181,15 @@ __do_user_fault(struct task_struct *tsk, unsigned long addr,
 	if (user_debug & UDBG_SEGV) {
 		printk(KERN_DEBUG "%s: unhandled page fault (%d) at 0x%08lx, code 0x%03x\n",
 		       tsk->comm, sig, addr, fsr);
+#ifdef CONFIG_ARM_FCSE_DYNPID
+		/* Disable preemption to avoid page tables changing under our
+		   feet */
+		preempt_disable();
+#endif /* CONFIG_ARM_FCSE_DYNPID */
 		show_pte(tsk->mm, addr);
+#ifdef CONFIG_ARM_FCSE_DYNPID
+		preempt_enable();
+#endif /* CONFIG_ARM_FCSE_DYNPID */
 		show_regs(regs);
 	}
 #endif

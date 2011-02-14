@@ -99,6 +99,7 @@ init_new_context(struct task_struct *tsk, struct mm_struct *mm)
 	   count, and shared writable pages are write-protected again. */
 	mm->context.fcse.shared_dirty_pages = 0;
 	mm->context.fcse.high_pages = 0;
+	mm->context.fcse.active = 0;
 #else /* CONFIG_ARM_FCSE_GUARANTEED */
 	fcse_pid = fcse_pid_alloc(mm);
 	if (fcse_pid < 0) {
@@ -179,7 +180,17 @@ switch_mm(struct mm_struct *prev, struct mm_struct *next,
 }
 
 #define deactivate_mm(tsk,mm)	do { } while (0)
+
+#ifndef CONFIG_ARM_FCSE_BEST_EFFORT
 #define activate_mm(prev,next)	switch_mm(prev, next, NULL)
+#else
+#define activate_mm(prev,next)						\
+	({								\
+	switch_mm(prev, next, NULL);					\
+	next->context.fcse.active = 1;					\
+	FCSE_BUG_ON(current->mm == next && !fcse_mm_in_cache(next));	\
+	})
+#endif
 
 /*
  * We are inserting a "fake" vma for the user-accessible vector page so
