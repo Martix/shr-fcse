@@ -400,12 +400,6 @@ static int neo1973_wm8753_init(struct snd_soc_pcm_runtime *rtd)
 	snd_soc_dapm_disable_pin(dapm, "Headset Mic");
 	snd_soc_dapm_disable_pin(dapm, "Handset Mic");
 
-	/* allow audio paths from the GSM modem to run during suspend */
-	snd_soc_dapm_ignore_suspend(dapm, "GSM Line Out");
-	snd_soc_dapm_ignore_suspend(dapm, "GSM Line In");
-	snd_soc_dapm_ignore_suspend(dapm, "Headset Mic");
-	snd_soc_dapm_ignore_suspend(dapm, "Handset Mic");
-
 	if (machine_is_neo1973_gta02()) {
 		ret = neo1973_gta02_wm8753_init(codec);
 		if (ret)
